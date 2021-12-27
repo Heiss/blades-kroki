@@ -1,6 +1,13 @@
 A transform plugin for [Blades](https://getblades.org) that renders code blocks using [Kroki](https://kroki.io/) as default service.
 Code blocks delimited by `` ``` `` and the algorithm can be specified in the first line.
 
+## Beware:
+
+This implementation currently not support parallel requests to kroki server, so a heavy load of diagrams can lags performance. But we are using a cache, so all requests done only once as long as you do not change the diagramtype or diagram content.
+
+
+## Tutorial
+
 General use:
 
 ````

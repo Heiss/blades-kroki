@@ -1,75 +1,112 @@
+use beef::Cow;
 use blades::Page;
+use fnv::FnvHasher;
+use logos::Logos;
+use nohash_hasher::IntMap;
 use rayon::prelude::*;
-use regex::{Captures, Regex};
-use serde::Serialize;
+use regex::Captures;
+use regex::Regex;
+use reqwest::StatusCode;
+use std::fs::File;
+use std::hash::Hasher;
 use std::io::Read;
+use std::io::Write;
+use std::sync::Mutex;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut source = Vec::new();
-    std::io::stdin().read_to_end(&mut source)?;
-    parse_input(&source)
+static CACHE_FILE: &str = ".rkroki.cache";
+
+#[derive(Logos, Copy, Clone, Debug)]
+enum Expr {
+    #[regex(r"\$\$((?:[^\$]|\\\$)+)[^\\]\$\$", |_| true)]
+    #[regex(r"\$((?:[^\$]|\\\$)+)[^\\]\$", |_| false)]
+    Math(bool),
+
+    #[error]
+    Plaintext,
 }
 
-fn parse_input(source: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut pages: Vec<Page> = serde_json::from_slice(source)?;
+/// A wrapper that enables zero-copy deserialization.
+#[derive(serde::Deserialize)]
+#[serde(transparent)]
+struct SerCow<'a>(#[serde(borrow)] Cow<'a, str>);
 
-    parse(&mut pages);
-
-    serde_json::to_writer(std::io::stdout(), &pages)?;
-    Ok(())
+#[inline]
+fn hash(s: &str, display: bool) -> u64 {
+    let mut hasher = FnvHasher::default();
+    hasher.write(s.as_ref());
+    hasher.write_u8(display as u8);
+    hasher.finish()
 }
 
-#[derive(Serialize, Debug)]
+#[derive(serde::Serialize, Debug)]
 struct Kroki {
     diagram_source: String,
 }
 
-fn parse(pages: &mut Vec<Page>) {
-    pages.par_iter_mut().for_each(|page| {
-        let content = &page.content;
-        println!("content: {}", content);
-        let re = Regex::new(r"(?s)```(\S*)[\n|\\n](.+)[\n|\\n]```").unwrap();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut source = Vec::new();
+    std::io::stdin().read_to_end(&mut source)?;
+    let mut pages: Vec<Page> = serde_json::from_slice(&source)?;
 
-        re.replace_all(content, |cap: &Captures| {
+    let cache_data = std::fs::read(CACHE_FILE).unwrap_or_default();
+    let cache: IntMap<u64, SerCow> = bincode::deserialize(&cache_data).unwrap_or_default();
+    let mut cache: IntMap<u64, Cow<str>> = cache.into_iter().map(|(k, v)| (k, v.0)).collect();
+
+    let re = Regex::new(r"(?sU)```(\S*)\n(.+)\n```").unwrap();
+    pages.iter_mut().for_each(|mut page| {
+        let content = page.content.to_string();
+
+        let result = re.replace_all(&content, |cap: &Captures| {
             let server = "https://kroki.io";
             let diagramtype = &cap[1];
             let diagram = &cap[2];
 
-            let url = format!("{}/{}/svg", server, diagramtype).to_lowercase();
-            let client = reqwest::blocking::Client::new();
+            let hash = hash(&format!("{};{}", diagramtype, diagram), false);
 
-            let body = Kroki {
-                diagram_source: diagram.to_string(),
-            };
+            let mut cached_entry = cache.get(&hash);
 
-            let t = client
-                .post(&url)
-                .json(&body)
-                .send()
-                .expect("error in reqwest")
-                .text()
-                .expect("no text in response");
+            if cached_entry.is_none() {
+                let url = format!("{}/{}/svg", server, diagramtype).to_lowercase();
+                let client = reqwest::blocking::Client::new();
 
-            t
+                let body = Kroki {
+                    diagram_source: diagram.to_string(),
+                };
+
+                let response = client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .expect("error in reqwest");
+
+                if response.status().is_success() {
+                    let parsed_diagram = response.text().expect("no text in response");
+
+                    cache.insert(hash, parsed_diagram.into());
+                    cached_entry = cache.get(&hash);
+                }
+            }
+
+            match cached_entry {
+                Some(cached) => {
+                    let filepath = format!("{}/{}.svg", "assets", hash);
+                    let public_filepath = format!("{}/{}", "public", &filepath);
+
+                    let mut file = File::create(&public_filepath)
+                        .expect(&format!("cannot create svg file {}", &public_filepath));
+                    file.write_all(cached.as_bytes())
+                        .expect("cannot write to svg file");
+
+                    format!("<img src=\"{}\" />", filepath)
+                }
+                None => format!("```{}\n{}\n```", &diagramtype, &diagram),
+            }
         });
+
+        page.content = result.to_string().into();
     });
-}
 
-#[cfg(test)]
-mod test_super {
-    use super::*;
-
-    #[test]
-    fn test_parse() {
-        let _input = r#"[{"content":"Hello","date":"2021-12-26T21:23:06.730","is_section":true},{"slug":"2021-12-27-diagram","content":"title = \"Diagram Test\"\nslug = \"diagram\"\ndate = 2021-12-27\n---\n\nPut your *possibly markdowned* content here. \n\n```Graphviz\ndigraph D {\n  subgraph cluster_p {\n    label = \"Kroki\";\n    subgraph cluster_c1 {\n      label = \"Server\";\n      Filebeat;\n      subgraph cluster_gc_1 {\n        label = \"Docker/Server\";\n        Java;\n      }\n      subgraph cluster_gc_2 {\n        label = \"Docker/Mermaid\";\n        \"Node.js\";\n        \"Puppeteer\";\n        \"Chrome\";\n      }\n    }\n    subgraph cluster_c2 {\n      label = \"CLI\";\n      Golang;\n    }\n  }\n}\n```","date":"2021-12-27T00:00:05.413829500"}]"#;
-        let input = r#"[{"content":"Hello","date":"2021-12-26T21:23:06.730","is_section":true},{"slug":"2021-12-27-diagram","content":"title = \"Diagram Test\"\nslug = \"diagram\"\ndate = 2021-12-27\n---\n\nPut your *possibly markdowned* content here. \n\n```Graphviz\ndigraph G {\n  Hello->World\n}\n```","date":"2021-12-27T00:00:05.413829500"}]"#;
-        let mut pages: Vec<Page> =
-            serde_json::from_slice(input.as_bytes()).expect("deserialize not works.");
-
-        parse(&mut pages);
-        assert_ne!(
-            serde_json::to_string(&pages).expect("cannot serialize"),
-            input
-        );
-    }
+    serde_json::to_writer(std::io::stdout(), &pages)?;
+    bincode::serialize_into(File::create(CACHE_FILE)?, &cache)?;
+    Ok(())
 }
