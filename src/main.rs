@@ -34,8 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .author("Peter Heiss <peter.heiss@uni-muenster.de>")
         .about("Krokis plugin for blades.")
         .args_from_usage(
-            "-s, --server=[address] 'Sets a custom kroki server address'
-                                 If not set, https://kroki.io will be used.",
+            "-s, --server=[address] 'Sets a custom kroki server address. If not set, defaults to https://kroki.io'",
         )
         .get_matches();
 
