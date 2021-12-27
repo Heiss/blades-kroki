@@ -1,29 +1,16 @@
+use base64::encode;
 use beef::Cow;
 use blades::Page;
+use clap::App;
 use fnv::FnvHasher;
-use logos::Logos;
 use nohash_hasher::IntMap;
-use rayon::prelude::*;
 use regex::Captures;
 use regex::Regex;
-use reqwest::StatusCode;
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::Read;
-use std::io::Write;
-use std::sync::Mutex;
 
 static CACHE_FILE: &str = ".rkroki.cache";
-
-#[derive(Logos, Copy, Clone, Debug)]
-enum Expr {
-    #[regex(r"\$\$((?:[^\$]|\\\$)+)[^\\]\$\$", |_| true)]
-    #[regex(r"\$((?:[^\$]|\\\$)+)[^\\]\$", |_| false)]
-    Math(bool),
-
-    #[error]
-    Plaintext,
-}
 
 /// A wrapper that enables zero-copy deserialization.
 #[derive(serde::Deserialize)]
@@ -31,10 +18,9 @@ enum Expr {
 struct SerCow<'a>(#[serde(borrow)] Cow<'a, str>);
 
 #[inline]
-fn hash(s: &str, display: bool) -> u64 {
+fn hash(s: &str) -> u64 {
     let mut hasher = FnvHasher::default();
     hasher.write(s.as_ref());
-    hasher.write_u8(display as u8);
     hasher.finish()
 }
 
@@ -42,8 +28,17 @@ fn hash(s: &str, display: bool) -> u64 {
 struct Kroki {
     diagram_source: String,
 }
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let matches = App::new("blades-kroki")
+        .version("1.0")
+        .author("Peter Heiss <peter.heiss@uni-muenster.de>")
+        .about("Krokis plugin for blades.")
+        .args_from_usage(
+            "-s, --server=[address] 'Sets a custom kroki server address'
+                                 If not set, https://kroki.io will be used.",
+        )
+        .get_matches();
+
     let mut source = Vec::new();
     std::io::stdin().read_to_end(&mut source)?;
     let mut pages: Vec<Page> = serde_json::from_slice(&source)?;
@@ -57,11 +52,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let content = page.content.to_string();
 
         let result = re.replace_all(&content, |cap: &Captures| {
-            let server = "https://kroki.io";
+            let server = matches.value_of("server").unwrap_or("https://kroki.io");
             let diagramtype = &cap[1];
             let diagram = &cap[2];
 
-            let hash = hash(&format!("{};{}", diagramtype, diagram), false);
+            let hash = hash(&format!("{};{}", diagramtype, diagram));
 
             let mut cached_entry = cache.get(&hash);
 
@@ -89,15 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match cached_entry {
                 Some(cached) => {
-                    let filepath = format!("{}/{}.svg", "assets", hash);
-                    let public_filepath = format!("{}/{}", "public", &filepath);
-
-                    let mut file = File::create(&public_filepath)
-                        .expect(&format!("cannot create svg file {}", &public_filepath));
-                    file.write_all(cached.as_bytes())
-                        .expect("cannot write to svg file");
-
-                    format!("<img src=\"{}\" />", filepath)
+                    format!(
+                        "<img src=\"data:image/svg+xml;base64,{}\" />",
+                        encode(cached.as_bytes())
+                    )
                 }
                 None => format!("```{}\n{}\n```", &diagramtype, &diagram),
             }
