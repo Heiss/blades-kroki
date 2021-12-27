@@ -1,10 +1,11 @@
 A transform plugin for [Blades](https://getblades.org) that renders code blocks using [Kroki](https://kroki.io/) as default service.
 Code blocks delimited by `` ``` `` and the algorithm can be specified in the first line.
 
+You can use any other code blocks as before, too. This plugin replaces only code blocks, which kroki responses with a successful conversion of a diagram. Otherwise it will print out the code block untouched, so another plugin can handle it.
+
 ## Beware:
 
 This implementation currently not support parallel requests to kroki server, so a heavy load of diagrams can lags performance. But we are using a cache, so all requests done only once as long as you do not change the diagramtype or diagram content.
-
 
 ## Tutorial
 
